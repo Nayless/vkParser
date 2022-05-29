@@ -1,0 +1,8 @@
+{
+  "access_keys": ["Your Keys"],
+  "params": ["Your params"],
+  "date_bounds": ["17/01/2022 22:07:55", "27/03/2022 22:07:55"],
+  "members_quantity": 100000,
+  "groups_quantity": 500
+
+}
