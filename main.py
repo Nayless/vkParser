@@ -4,6 +4,7 @@ from datetime import datetime
 import threading
 import psycopg2
 from psycopg2 import Error
+import re
 
 
 def main():
@@ -49,6 +50,7 @@ def get_necessary_posts(group_id, session):
 def analyze(post):
     global params
     text = post['text'].lower()
+    temp_text = re.split('; |, | |: |. ', text)
     for param in params.keys():
         if date_bounds[0] < datetime.fromtimestamp(post['date']):
             if date_bounds[1] > datetime.fromtimestamp(post['date']):
@@ -60,9 +62,10 @@ def analyze(post):
                             params[param]['last_in'] = datetime.fromtimestamp(post['date'])
                         params[param]['all'] += 1
                 else:
-                    for i in range(len(text)):
+
+                    for i in range(len(temp_text)):
                         try:
-                            if r'' + param[0] == text[i] and r'' + param[2] in text[i:i + param[1] + 1]:
+                            if r'' + param[0] == temp_text[i] and r'' + param[2] in temp_text[i:i + param[1] + 1]:
                                 if params[param]['first_in'] > datetime.fromtimestamp(post['date']):
                                     params[param]['first_in'] = datetime.fromtimestamp(post['date'])
                                 if params[param]['last_in'] < datetime.fromtimestamp(post['date']):
