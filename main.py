@@ -61,12 +61,15 @@ def analyze(post):
                         params[param]['all'] += 1
                 else:
                     for i in range(len(text)):
-                        if r'' + param[0] == text[i] and r'' + param[2] in text[i:i + param[1] + 1]:
-                            if params[param]['first_in'] > datetime.fromtimestamp(post['date']):
-                                params[param]['first_in'] = datetime.fromtimestamp(post['date'])
-                            if params[param]['last_in'] < datetime.fromtimestamp(post['date']):
-                                params[param]['last_in'] = datetime.fromtimestamp(post['date'])
-                            params[param]['all'] += 1
+                        try:
+                            if r'' + param[0] == text[i] and r'' + param[2] in text[i:i + param[1] + 1]:
+                                if params[param]['first_in'] > datetime.fromtimestamp(post['date']):
+                                    params[param]['first_in'] = datetime.fromtimestamp(post['date'])
+                                if params[param]['last_in'] < datetime.fromtimestamp(post['date']):
+                                    params[param]['last_in'] = datetime.fromtimestamp(post['date'])
+                                params[param]['all'] += 1
+                        except:
+                            pass
 
         else:
             return False
