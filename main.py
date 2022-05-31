@@ -23,12 +23,14 @@ def main():
 def get_groups(quantity, session, offset):  # get groups list and format it to dict {id:screen_name)
     res = []
     global members_q
+    global valid_groups
     for i in range(quantity // 500):
         ids = [str(j) for j in range((i + offset) * 500, ((i + offset) + 1) * 500)]
         res = session.method('groups.getById', {'group_ids': ','.join(ids), 'fields': ['id', 'members_count']})
         for group in res:
             if 'members_count' in group.keys() and group['members_count'] > members_q and group['is_closed'] == 0 and \
                     session.method('wall.get', {'owner_id': '-' + str(group['id'])})['count'] > 0:
+                valid_groups += 1
                 get_necessary_posts(group['id'], session)
     return
 
@@ -37,6 +39,7 @@ def get_groups(quantity, session, offset):  # get groups list and format it to d
 def get_necessary_posts(group_id, session):
     global date_bounds
     global params
+    global posts_quantity
 
     messages_quantity = session.method('wall.get', {'owner_id': '-' + str(group_id)})['count']
     for offset in range(0, messages_quantity, 20):
@@ -44,13 +47,16 @@ def get_necessary_posts(group_id, session):
         for post in posts:
             if not analyze(post):
                 return
+            posts_quantity += 1
     return
 
 
 def analyze(post):
     global params
+    global sum_text_len
     text = post['text'].lower()
     temp_text = re.split('; |, | |: |. ', text)
+    added_once = False
     for param in params.keys():
         if date_bounds[0] < datetime.fromtimestamp(post['date']):
             if date_bounds[1] > datetime.fromtimestamp(post['date']):
@@ -61,6 +67,10 @@ def analyze(post):
                         if params[param]['last_in'] < datetime.fromtimestamp(post['date']):
                             params[param]['last_in'] = datetime.fromtimestamp(post['date'])
                         params[param]['all'] += 1
+                        if not added_once:
+                            sum_text_len += len(text)
+                            added_once = True
+
                 else:
                     if param[1] < 0:
                         eq = -1
@@ -74,6 +84,10 @@ def analyze(post):
                                 if params[param]['last_in'] < datetime.fromtimestamp(post['date']):
                                     params[param]['last_in'] = datetime.fromtimestamp(post['date'])
                                 params[param]['all'] += 1
+                                if not added_once:
+                                    sum_text_len += len(text)
+                                    added_once = True
+
                         except:
                             pass
 
@@ -90,36 +104,69 @@ def create_db():
                                       host="127.0.0.1",
                                       port="5432",
                                       database="greendata_db")
+        cursor = connection.cursor()
     except (Exception, Error) as error:
         print("Ошибка при работе с PostgreSQL", error)
     try:
-        cursor = connection.cursor()
 
-        create_table_query = '''CREATE TABLE vk_parser
+
+        create_keys_table_query = '''CREATE TABLE keys_info
                               (KEY TEXT     NOT NULL,
                               FIRST_IN           timestamp ,
                               LAST_IN            timestamp ,
                               ALL_IN     INTEGER
                               ); '''
-        cursor.execute(create_table_query)
+        cursor.execute(create_keys_table_query)
     except:
         pass
 
     try:
-        insert_query = """ INSERT INTO vk_parser (KEY, FIRST_IN, LAST_IN, ALL_IN)
+        create_request_table_query = '''CREATE TABLE request_info
+                                      (PARAMS       TEXT     NOT NULL,
+                                      REQUEST_DATE           timestamp ,
+                                      VALID_GROUPS     INTEGER,
+                                      SUM_TEXT_LEN     INTEGER,
+                                      POSTS_QUANTITY     INTEGER
+                                      ); '''
+
+        cursor.execute(create_request_table_query)
+    except:
+        pass
+    try:
+        insert_keys_query = """ INSERT INTO keys_info (KEY, FIRST_IN, LAST_IN, ALL_IN)
                                       VALUES (%s, %s, %s, %s)"""
         for k, v in params.items():
             items = (str(k), v['first_in'], v['last_in'], v['all'])
-            cursor.execute(insert_query, items)
+            cursor.execute(insert_keys_query, items)
         connection.commit()
     except (Exception, Error) as error:
         print("Ошибка при работе с PostgreSQL", error)
+
+    try:
+        insert_request_query = """ INSERT INTO request_info 
+        (PARAMS, REQUEST_DATE, VALID_GROUPS, SUM_TEXT_LEN, POSTS_QUANTITY)
+                                      VALUES (%s, %s, %s, %s, %s)"""
+
+        cursor.execute(insert_request_query, (str(params_list), REQUEST_DATE, valid_groups, sum_text_len, posts_quantity))
+        connection.commit()
+    except (Exception, Error) as error:
+        print("Ошибка при работе с PostgreSQL", error)
+
+
 
     finally:
         if connection:
             cursor.close()
             connection.close()
             print("Соединение с PostgreSQL закрыто")
+
+
+REQUEST_DATE = datetime.now()
+
+sum_text_len = 0
+valid_groups = 0
+posts_quantity = 0
+
 
 
 with open('data.json', 'r') as data_read:
