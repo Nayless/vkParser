@@ -5,6 +5,7 @@ import threading
 import psycopg2
 from psycopg2 import Error
 import re
+import time
 
 
 def main():
@@ -13,19 +14,21 @@ def main():
     for key in tokens:
         session = vk_api.VkApi(token=key)
         vk = session.get_api()
-        try:
-            threading.Thread(target=get_groups, args=(groups_q // len(tokens), session, padding,)).start()
-        except vk_api.exceptions.ApiError[29]:
-            print("VK_API: Rate limit reached")
+
+        threading.Thread(target=get_groups, args=(groups_q // len(tokens), session, padding,)).start()
+
         padding += 1
 
 
 def get_groups(quantity, session, offset):  # get groups list and format it to dict {id:screen_name)
-    res = []
+    global groups_req
     global members_q
     global valid_groups
-    for i in range(quantity // 500):
-        ids = [str(j) for j in range((i + offset) * 500, ((i + offset) + 1) * 500)]
+
+    res = []
+
+    for i in range(quantity // groups_req):
+        ids = [str(j) for j in range((i + offset) * groups_req, ((i + offset) + 1) * groups_req)]
         res = session.method('groups.getById', {'group_ids': ','.join(ids), 'fields': ['id', 'members_count']})
         for group in res:
             if 'members_count' in group.keys() and group['members_count'] > members_q and group['is_closed'] == 0 and \
@@ -45,56 +48,48 @@ def get_necessary_posts(group_id, session):
     for offset in range(0, messages_quantity, 20):
         posts = session.method('wall.get', {'owner_id': '-' + str(group_id), 'offset': offset})['items']
         for post in posts:
-            if not analyze(post):
+            if date_bounds[0] < datetime.fromtimestamp(post['date']):
+                if date_bounds[1] > datetime.fromtimestamp(post['date']):
+                    threading.Thread(target=analyze, args=(post,)).run()
+            else:
                 return
-            posts_quantity += 1
     return
 
 
 def analyze(post):
     global params
     global sum_text_len
+
     text = post['text'].lower()
+    sum_text_len += len(text)
     temp_text = re.split('; |, | |: |. ', text)
-    added_once = False
+
     for param in params.keys():
-        if date_bounds[0] < datetime.fromtimestamp(post['date']):
-            if date_bounds[1] > datetime.fromtimestamp(post['date']):
-                if type(param) is str:
-                    if r'' + param.lower() in text:
+        if type(param) is str:
+            if r'' + param.lower() in text:
+                if params[param]['first_in'] > datetime.fromtimestamp(post['date']):
+                    params[param]['first_in'] = datetime.fromtimestamp(post['date'])
+                if params[param]['last_in'] < datetime.fromtimestamp(post['date']):
+                    params[param]['last_in'] = datetime.fromtimestamp(post['date'])
+                params[param]['all'] += 1
+
+        else:
+            if param[1] < 0:
+                eq = -1
+            else:
+                eq = 1
+            for i in range(len(temp_text)):
+                try:
+                    if r'' + param[0] == temp_text[i] and r'' + param[2] in temp_text[i:i + param[1] + eq]:
                         if params[param]['first_in'] > datetime.fromtimestamp(post['date']):
                             params[param]['first_in'] = datetime.fromtimestamp(post['date'])
                         if params[param]['last_in'] < datetime.fromtimestamp(post['date']):
                             params[param]['last_in'] = datetime.fromtimestamp(post['date'])
                         params[param]['all'] += 1
-                        if not added_once:
-                            sum_text_len += len(text)
-                            added_once = True
 
-                else:
-                    if param[1] < 0:
-                        eq = -1
-                    else:
-                        eq = 1
-                    for i in range(len(temp_text)):
-                        try:
-                            if r'' + param[0] == temp_text[i] and r'' + param[2] in temp_text[i:i + param[1] + eq]:
-                                if params[param]['first_in'] > datetime.fromtimestamp(post['date']):
-                                    params[param]['first_in'] = datetime.fromtimestamp(post['date'])
-                                if params[param]['last_in'] < datetime.fromtimestamp(post['date']):
-                                    params[param]['last_in'] = datetime.fromtimestamp(post['date'])
-                                params[param]['all'] += 1
-                                if not added_once:
-                                    sum_text_len += len(text)
-                                    added_once = True
-
-                        except:
-                            pass
-
-        else:
-            return False
-
-    return True
+                except:
+                    pass
+    return
 
 
 def create_db():
@@ -108,7 +103,7 @@ def create_db():
     except (Exception, Error) as error:
         print("Ошибка при работе с PostgreSQL", error)
     try:
-
+        cursor = connection.cursor()
 
         create_keys_table_query = '''CREATE TABLE keys_info
                               (KEY TEXT     NOT NULL,
@@ -118,9 +113,10 @@ def create_db():
                               ); '''
         cursor.execute(create_keys_table_query)
     except:
-        pass
+        connection.rollback()
 
     try:
+        cursor = connection.cursor()
         create_request_table_query = '''CREATE TABLE request_info
                                       (PARAMS       TEXT     NOT NULL,
                                       REQUEST_DATE           timestamp ,
@@ -131,8 +127,9 @@ def create_db():
 
         cursor.execute(create_request_table_query)
     except:
-        pass
+        connection.rollback()
     try:
+        cursor = connection.cursor()
         insert_keys_query = """ INSERT INTO keys_info (KEY, FIRST_IN, LAST_IN, ALL_IN)
                                       VALUES (%s, %s, %s, %s)"""
         for k, v in params.items():
@@ -141,16 +138,20 @@ def create_db():
         connection.commit()
     except (Exception, Error) as error:
         print("Ошибка при работе с PostgreSQL", error)
+        connection.rollback()
 
     try:
         insert_request_query = """ INSERT INTO request_info 
         (PARAMS, REQUEST_DATE, VALID_GROUPS, SUM_TEXT_LEN, POSTS_QUANTITY)
                                       VALUES (%s, %s, %s, %s, %s)"""
 
-        cursor.execute(insert_request_query, (str(params_list), REQUEST_DATE, valid_groups, sum_text_len, posts_quantity))
+        cursor.execute(insert_request_query,
+                       (str(params_list), REQUEST_DATE, valid_groups, sum_text_len, posts_quantity))
         connection.commit()
     except (Exception, Error) as error:
         print("Ошибка при работе с PostgreSQL", error)
+        connection.rollback()
+
 
 
 
@@ -162,14 +163,12 @@ def create_db():
 
 
 REQUEST_DATE = datetime.now()
-
 sum_text_len = 0
 valid_groups = 0
 posts_quantity = 0
+thread_log = []
 
-
-
-with open('data.json', 'r') as data_read:
+with open('data.json', 'r', encoding="utf-8") as data_read:
     data = json.load(data_read)
     date_bounds = [datetime.strptime(data['date_bounds'][0], '%d/%m/%Y %H:%M:%S'),
                    datetime.strptime(data['date_bounds'][1], '%d/%m/%Y %H:%M:%S')]
@@ -178,22 +177,27 @@ with open('data.json', 'r') as data_read:
     tokens = data['access_keys']
     members_q = data['members_quantity']
     groups_q = data['groups_quantity']
+    groups_req = data["groups_per_request"]  # Количество получаемых групп одним запросом (max - 500)
 
     params = {}
     for par in data['params']:
         if type(par) is str:
             params[par] = {
-                "first_in": datetime.strptime('27/03/2000 22:07:55', '%d/%m/%Y %H:%M:%S'),
-                "last_in": datetime.now(),
+                "first_in": datetime.now(),
+                "last_in": datetime.strptime('02/11/1000 22:07:55', '%d/%m/%Y %H:%M:%S'),
                 "all": 0
             }
         else:
             params[tuple(par)] = {
-                "first_in": datetime.strptime('27/03/2000 22:07:55', '%d/%m/%Y %H:%M:%S'),
-                "last_in": datetime.now(),
+                "first_in": datetime.now(),
+                "last_in": datetime.strptime('02/11/1000 22:07:55', '%d/%m/%Y %H:%M:%S'),
                 "all": 0
             }
 
 if __name__ == '__main__':
     main()
+    time.sleep(1)
+    while True:
+        if threading.active_count() == 1:
+            break
     create_db()
