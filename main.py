@@ -200,16 +200,11 @@ def create_db():
     except (Exception, Error) as error:
         print("Ошибка при работе с PostgreSQL", error)
         connection.rollback()
-
-
-
-
     finally:
         if connection:
             cursor.close()
             connection.close()
             print("Соединение с PostgreSQL закрыто")
-
 
 
 if __name__ == '__main__':
