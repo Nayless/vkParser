@@ -5,7 +5,50 @@ import threading
 import psycopg2
 from psycopg2 import Error
 import re
-import time
+from flask import Flask, request
+
+# create the Flask app
+app = Flask(__name__)
+
+time_bounds = []
+keywords = []
+params = []
+REQUEST_DATE = datetime.now()
+sum_text_len = 0
+valid_groups = 0
+posts_quantity = 0
+thread_log = []
+
+with open('data.json', 'r', encoding="utf-8") as data_read:
+    data = json.load(data_read)
+    tokens = data['access_keys']
+    members_q = data['members_quantity']
+    groups_q = data['groups_quantity']
+    groups_req = data["groups_per_request"]  # Количество получаемых групп одним запросом (max - 500)
+
+
+@app.route('/', methods=['POST'])
+def post_data():
+    global time_bounds, params_list, params
+    request_data = request.get_json()
+    time_bounds = [datetime.strptime(request_data['time_bounds'][0], '%d/%m/%Y %H:%M:%S'),
+                   datetime.strptime(request_data['time_bounds'][1], '%d/%m/%Y %H:%M:%S')]
+    for par in request_data['keywords']:
+        if type(par) is str:
+            params[par] = {
+                "first_in": datetime.now(),
+                "last_in": datetime.strptime('02/11/1000 22:07:55', '%d/%m/%Y %H:%M:%S'),
+                "all": 0
+            }
+        else:
+            params[tuple(par)] = {
+                "first_in": datetime.now(),
+                "last_in": datetime.strptime('02/11/1000 22:07:55', '%d/%m/%Y %H:%M:%S'),
+                "all": 0
+            }
+    params_list = request_data['keywords']
+    main()
+    return "success"
 
 
 def main():
@@ -14,10 +57,16 @@ def main():
     for key in tokens:
         session = vk_api.VkApi(token=key)
         vk = session.get_api()
-
-        threading.Thread(target=get_groups, args=(groups_q // len(tokens), session, padding,)).start()
+        try:
+            threading.Thread(target=get_groups, args=(groups_q // len(tokens), session, padding,)).start()
+        except:
+            pass
 
         padding += 1
+    while True:
+        if threading.active_count() == 1:
+            break
+    create_db()
 
 
 def get_groups(quantity, session, offset):  # get groups list and format it to dict {id:screen_name)
@@ -50,7 +99,7 @@ def get_necessary_posts(group_id, session):
         for post in posts:
             if date_bounds[0] < datetime.fromtimestamp(post['date']):
                 if date_bounds[1] > datetime.fromtimestamp(post['date']):
-                    threading.Thread(target=analyze, args=(post,)).run()
+                    analyze(post)
             else:
                 return
     return
@@ -162,42 +211,7 @@ def create_db():
             print("Соединение с PostgreSQL закрыто")
 
 
-REQUEST_DATE = datetime.now()
-sum_text_len = 0
-valid_groups = 0
-posts_quantity = 0
-thread_log = []
-
-with open('data.json', 'r', encoding="utf-8") as data_read:
-    data = json.load(data_read)
-    date_bounds = [datetime.strptime(data['date_bounds'][0], '%d/%m/%Y %H:%M:%S'),
-                   datetime.strptime(data['date_bounds'][1], '%d/%m/%Y %H:%M:%S')]
-
-    params_list = data['params']
-    tokens = data['access_keys']
-    members_q = data['members_quantity']
-    groups_q = data['groups_quantity']
-    groups_req = data["groups_per_request"]  # Количество получаемых групп одним запросом (max - 500)
-
-    params = {}
-    for par in data['params']:
-        if type(par) is str:
-            params[par] = {
-                "first_in": datetime.now(),
-                "last_in": datetime.strptime('02/11/1000 22:07:55', '%d/%m/%Y %H:%M:%S'),
-                "all": 0
-            }
-        else:
-            params[tuple(par)] = {
-                "first_in": datetime.now(),
-                "last_in": datetime.strptime('02/11/1000 22:07:55', '%d/%m/%Y %H:%M:%S'),
-                "all": 0
-            }
 
 if __name__ == '__main__':
-    main()
-    time.sleep(1)
-    while True:
-        if threading.active_count() == 1:
-            break
-    create_db()
+    from waitress import serve
+    serve(app, host="0.0.0.0", port=8080)
