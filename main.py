@@ -10,14 +10,15 @@ from flask import Flask, request
 # create the Flask app
 app = Flask(__name__)
 
-time_bounds = []
+date_bounds = []
 keywords = []
-params = []
+params = {}
+params_list = []
 REQUEST_DATE = datetime.now()
 sum_text_len = 0
 valid_groups = 0
 posts_quantity = 0
-thread_log = []
+current_group = 0
 
 with open('data.json', 'r', encoding="utf-8") as data_read:
     data = json.load(data_read)
@@ -27,11 +28,11 @@ with open('data.json', 'r', encoding="utf-8") as data_read:
     groups_req = data["groups_per_request"]  # Количество получаемых групп одним запросом (max - 500)
 
 
-@app.route('/', methods=['POST'])
+@app.route('/vk', methods=['POST'])
 def post_data():
-    global time_bounds, params_list, params
+    global date_bounds, params_list, params
     request_data = request.get_json()
-    time_bounds = [datetime.strptime(request_data['time_bounds'][0], '%d/%m/%Y %H:%M:%S'),
+    date_bounds = [datetime.strptime(request_data['time_bounds'][0], '%d/%m/%Y %H:%M:%S'),
                    datetime.strptime(request_data['time_bounds'][1], '%d/%m/%Y %H:%M:%S')]
     for par in request_data['keywords']:
         if type(par) is str:
@@ -48,7 +49,7 @@ def post_data():
             }
     params_list = request_data['keywords']
     main()
-    return "success"
+    return f"{len(params_list)} line(s) saved"
 
 
 def main():
@@ -58,21 +59,23 @@ def main():
         session = vk_api.VkApi(token=key)
         vk = session.get_api()
         try:
-            threading.Thread(target=get_groups, args=(groups_q // len(tokens), session, padding,)).start()
+            threading.Thread(target=get_groups, args=(groups_q // len(tokens), session, padding,)).run()
         except:
             pass
 
         padding += 1
     while True:
-        if threading.active_count() == 1:
+        if current_group == groups_q:
             break
     create_db()
+
 
 
 def get_groups(quantity, session, offset):  # get groups list and format it to dict {id:screen_name)
     global groups_req
     global members_q
     global valid_groups
+    global current_group
 
     res = []
 
@@ -84,6 +87,7 @@ def get_groups(quantity, session, offset):  # get groups list and format it to d
                     session.method('wall.get', {'owner_id': '-' + str(group['id'])})['count'] > 0:
                 valid_groups += 1
                 get_necessary_posts(group['id'], session)
+            current_group = group['id']+1
     return
 
 
@@ -93,14 +97,17 @@ def get_necessary_posts(group_id, session):
     global params
     global posts_quantity
 
+
     messages_quantity = session.method('wall.get', {'owner_id': '-' + str(group_id)})['count']
     for offset in range(0, messages_quantity, 20):
         posts = session.method('wall.get', {'owner_id': '-' + str(group_id), 'offset': offset})['items']
         for post in posts:
             if date_bounds[0] < datetime.fromtimestamp(post['date']):
                 if date_bounds[1] > datetime.fromtimestamp(post['date']):
+                    posts_quantity += 1
                     analyze(post)
             else:
+
                 return
     return
 
@@ -205,7 +212,6 @@ def create_db():
             cursor.close()
             connection.close()
             print("Соединение с PostgreSQL закрыто")
-
 
 if __name__ == '__main__':
     from waitress import serve
